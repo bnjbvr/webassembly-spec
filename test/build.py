@@ -122,11 +122,11 @@ HTML_HEADER = """
 <!doctype html>
 <title>WebAssembly Web Platform Test</title>
 <link rel=author href=mailto:bbouvier@mozilla.com title=bnjbvr>
-<script src=../../lib/testharness.js></script>
-<script src=../../lib/testharnessreport.js></script>
-<script src=../../lib/index.js></script>
-<script src=../../lib/wasm-constants.js></script>
-<script src=../../lib/wasm-module-builder.js></script>
+<script src={PREFIX}lib/testharness.js></script>
+<script src={PREFIX}lib/testharnessreport.js></script>
+<script src={PREFIX}lib/index.js></script>
+<script src={PREFIX}lib/wasm-constants.js></script>
+<script src={PREFIX}lib/wasm-module-builder.js></script>
 
 <div id=log></div>
 """
@@ -142,14 +142,14 @@ def build_html():
         html_filename = js_filename + '.html'
         html_file = os.path.join(OUT_HTML_DIR, html_filename)
         with open(html_file, 'w+') as f:
-            content = HTML_HEADER
+            content = HTML_HEADER.replace('{PREFIX}', '../../')
             content += "<script src=../js/{SCRIPT}></script>".replace('{SCRIPT}', js_filename)
             f.write(content)
 
     print('Building front page containing all the HTML tests...')
     front_page = os.path.join(OUT_DIR, 'index.html')
     with open(front_page, 'w+') as f:
-        content = HTML_HEADER
+        content = HTML_HEADER.replace('{PREFIX}', '../')
         for filename in js_files:
             content += "<script src=./js/{SCRIPT}></script>".replace('{SCRIPT}', filename)
         f.write(content)
