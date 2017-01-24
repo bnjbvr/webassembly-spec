@@ -14,6 +14,8 @@
  * limitations under the License.
 */
 
+'use strict';
+
 function assertErrorMessage(f, ctor, test) {
     try {
         f();
@@ -29,157 +31,185 @@ function assertErrorMessage(f, ctor, test) {
     assert_true(false, "expected exception " + ctor.name + ", no exception thrown");
 };
 
-// Mimick the wasm spec-interpreter test harness.
-var spectest = {
-    print: console.log.bind(console),
-    global: 666,
-    table: new WebAssembly.Table({initial: 10, maximum: 20, element: 'anyfunc'}),
-    memory: new WebAssembly.Memory({initial: 1, maximum: 2})
+/******************************************************************************
+***************************** WAST HARNESS ************************************
+******************************************************************************/
+
+let soft_validate = true;
+
+let spectest = {
+  print: console.log.bind(console),
+  global: 666,
+  table: new WebAssembly.Table({initial: 10, maximum: 20, element: 'anyfunc'}),
+  memory: new WebAssembly.Memory({initial: 1, maximum: 2})
 };
 
-var registry = { spectest };
+let $$;
 
-function register(name, instance) {
-    registry[name] = instance.exports;
-}
-
-function module(bytes, valid = true) {
+function binary(bytes) {
     let buffer = new ArrayBuffer(bytes.length);
     let view = new Uint8Array(buffer);
     for (let i = 0; i < bytes.length; ++i) {
         view[i] = bytes.charCodeAt(i);
     }
-
-    test(() => {
-        assert_equals(WebAssembly.validate(buffer), valid);
-    }, (valid ? '' : 'in') + 'valid module');
-
-    try {
-        return new WebAssembly.Module(buffer);
-    } catch(e){
-        if (!valid)
-            throw e;
-        return null;
-    }
+    return buffer;
 }
 
-// Proxy used when a module can't be compiled, thus instanciated; this is an
-// object that contains any name property, returned as a function.
-const AnyExportAsFunction = new Proxy({}, {
-    get() {
-        return function() {}
-    }
-});
+function module(bytes, valid = true) {
+    return new Promise((resolve, reject) => {
+        let buffer = binary(bytes);
+        let validated;
+        try {
+            validated = WebAssembly.validate(buffer);
+        } catch (e) {
+            return reject(new Error(`WebAssembly.validate throws: ${e}${stack}`));
+        }
+        if (validated !== valid) {
+            // Try to get a more precise error message from the WebAssembly.CompileError.
+            let err = '';
+            try {
+                new WebAssembly.Module(buffer);
+            } catch(e) {
+                err = e;
+            }
+            return reject(new Error(`WebAssembly.validate error: ${err}\n`));
+        }
+
+        let module;
+        try {
+            module = new WebAssembly.Module(buffer);
+        } catch(e) {
+            if (valid)
+                return reject(new Error(`WebAssembly.Module ctor throws: ${e.toString()}\n${e.stack}\n`));
+            reject(e);
+            return;
+        }
+
+        resolve(module);
+    });
+}
 
 function instance(bytes, imports = registry) {
-    let m = module(bytes);
-    if (m === null) {
-        test(() => {
-            assert_unreached('instance(): unable to compile module');
+    let m = null;
+    return module(bytes)
+    .then(compiled => {
+        m = compiled;
+        return typeof imports === 'function'
+               ? imports()
+               : Promise.resolve(imports)
+    }).then(imports => new WebAssembly.Instance(m, imports));
+}
+
+let registry = { spectest };
+
+function register(name, instance) {
+    return instance.then(i => { registry[name] = i.exports; });
+}
+
+function call(instance, name, args) {
+    return instance
+    .then(i => Promise.resolve(i.exports[name](...args)));
+};
+
+function get(instance, name) {
+    return instance.then(i => Promise.resolve(i.exports[name]));
+}
+
+function exports(name, instance) {
+    return instance.then(i => Promise.resolve({ [name]: i.exports }));
+}
+
+function assert_invalid(bytes) {
+    promise_test(() => {
+        return module(bytes, /* valid */ false)
+        .then(() => { throw null })
+        .catch(e => {
+            assert_true(e instanceof WebAssembly.CompileError, "expected invalid failure:");
         });
-        return {
-            exports: AnyExportAsFunction
-        }
-    }
-    return new WebAssembly.Instance(m, imports);
+    }, "A wast module that should be invalid or malformed.");
 }
 
-function assert_malformed(bytes) {
-    test(() => {
-        try {
-            module(bytes, false);
-        } catch (e) {
-            assert_true(e instanceof WebAssembly.CompileError, "expect CompileError in assert_malformed");
-            return;
-        }
-        assert_unreached("assert_malformed: wasm decoding failure expected");
-    }, "assert_malformed");
-}
-
-const assert_invalid = assert_malformed;
+const assert_malformed = assert_invalid;
 
 function assert_soft_invalid(bytes) {
-    test(() => {
-        try {
-            module(bytes, /* soft invalid */ false);
-        } catch (e) {
-            assert_true(e instanceof WebAssembly.CompileError, "expect CompileError in assert_soft_invalid");
-            return;
-        }
-    }, "assert_soft_invalid");
+    promise_test(() => {
+        return module(bytes, soft_validate)
+        .then(() => {
+            if (soft_validate)
+                throw null;
+        })
+        .catch(e => {
+            if (soft_validate)
+                assert_true(e instanceof WebAssembly.CompileError, "expected soft invalid failure:");
+        });
+    }, "A wast module that *could* be invalid under certain engines.");
 }
 
 function assert_unlinkable(bytes) {
-    test(() => {
-        let mod = module(bytes);
-        if (!mod) {
-            assert_unreached('assert_unlinkable: module should have compiled!');
-            return;
-        }
-        try {
-            new WebAssembly.Instance(mod, registry);
-        } catch (e) {
-            assert_true(e instanceof WebAssembly.LinkError, "expect LinkError in assert_unlinkable");
-            return;
-        }
-        assert_unreached("Wasm linking failure expected");
-    }, "assert_unlinkable");
+    promise_test(() => {
+        return instance(bytes, registry)
+        .then(() => {
+            throw null
+        })
+        .catch(e => {
+            assert_true(e instanceof WebAssembly.LinkError, `expected link error, observed ${e}:`);
+        });
+    }, "A wast module that is unlinkable.");
 }
 
 function assert_uninstantiable(bytes) {
-    test(() => {
-        let mod = module(bytes);
-        if (!mod) {
-            assert_unreached('assert_unlinkable: module should have compiled!');
-            return;
-        }
-        try {
-            new WebAssembly.Instance(mod, registry);
-        } catch (e) {
-            assert_true(e instanceof WebAssembly.RuntimeError, "expect RuntimeError in assert_uninstantiable");
-            return;
-        }
-        assert_unreached("Wasm trap expected");
-    }, "assert_uninstantiable");
+    promise_test(() => {
+        return instance(bytes, registry)
+        .then(() => {
+            throw null;
+        })
+        .catch(e => {
+            assert_true(e instanceof WebAssembly.RuntimeError, `expected runtime error, observed ${e}:`);
+        });
+    }, "A wast module that can't be instanciated");
 }
 
 function assert_trap(action) {
-    test(() => {
-        try {
-            action()
-        } catch (e) {
-            assert_true(e instanceof WebAssembly.RuntimeError, "expect RuntimeError in assert_trap");
-            return;
-        }
-        assert_unreached("Wasm trap expected");
-    }, "assert_trap");
+    promise_test(() => {
+        return action()
+        .then(() => {
+            throw null;
+        })
+        .catch(e => {
+            assert_true(e instanceof WebAssembly.RuntimeError, `expected runtime error, observed ${e}:`);
+        });
+    }, "A wast module that must trap at runtime.");
 }
 
 let StackOverflow;
 try { (function f() { 1 + f() })() } catch (e) { StackOverflow = e.constructor }
 
 function assert_exhaustion(action) {
-    test(() => {
-        try {
-            action();
-        } catch (e) {
-            assert_true(e instanceof StackOverflow, "expect StackOverflow in assert_exhaustion");
-            return;
-        }
-        assert_unreached("Wasm resource exhaustion expected");
-    }, "assert_exhaustion");
+    promise_test(() => {
+        return action()
+        .then(() => {
+            throw null;
+        })
+        .catch(e => {
+            assert_true(e instanceof StackOverflow, `expected stack overflow error, observed ${e}:`);
+        });
+    }, "A wast module that must exhaust the stack space.");
 }
 
 function assert_return(action, expected) {
-    test(() => {
-        let actual = action();
-        assert_equals(actual, expected, "Wasm return value " + expected + " expected, got " + actual);
-    }, "assert_return");
-}
+    promise_test(() => {
+        return action()
+        .then(actual => {
+            assert_true(Object.is(actual, expected), `expected ${expected}, observed ${actual}:`);
+        });
+    }, "A wast module that must return a particular value.");
+};
 
 function assert_return_nan(action) {
-    test(() => {
-        let actual = action();
-        assert_true(Number.isNaN(actual), "Wasm return value NaN expected, got " + actual);
-    }, "assert_return_nan");
+    promise_test(() => {
+        return action()
+        .then(actual => {
+            assert_true(Number.isNaN(actual), `expected NaN, observed ${actual}:`);
+        });
+    }, "A wast module that must return NaN.");
 }
