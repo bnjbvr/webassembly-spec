@@ -380,7 +380,7 @@ test(() => {
     exportsObj.g = 1;
     assert_equals(Object.keys(exportsObj).join(), "f");
     assertErrorMessage(() => Object.setPrototypeOf(exportsObj, {}), TypeError, /can't set prototype of this object/);
-    assert_equals(Object.getPrototypeOf(exportsObj), 383);
+    assert_equals(Object.getPrototypeOf(exportsObj), null);
     assertErrorMessage(() => Object.defineProperty(exportsObj, 'g', {}), TypeError, /Object is not extensible/);
     assert_equals(Object.keys(exportsObj).join(), "f");
 }, "'WebAssembly.Instance' 'exports' object");
@@ -710,7 +710,7 @@ test(() => {
     const instantiateDesc = Object.getOwnPropertyDescriptor(WebAssembly, 'instantiate');
     const instantiate = WebAssembly.instantiate;
     assert_equals(instantiate, instantiateDesc.value);
-    assert_equals(instantiate.length, 2);
+    assert_equals(instantiate.length, 1);
     assert_equals(instantiate.name, "instantiate");
     function assertInstantiateError(args, err, msg) {
         promise_test(() => {
